@@ -33,21 +33,21 @@ class HunyuanVideoTransformer3DModel:#Dummy
         return HunyuanVideoTransformer3DModel()
     def to(self, device):
         return self
-class SkyreelsVideoPipeline:#Dummy
+
+class SkyreelsVideoPipeline:
     @staticmethod
     def from_pretrained(*args, **kwargs):
         return SkyreelsVideoPipeline()
     def to(self, device):
         return self
     def __call__(self, *args, **kwargs):
-        frames = [torch.randn(1, 3, 512, 512)]  # Dummy frames for testing
-        return type('obj', (object,), {'frames' : frames})()
+        # Correct dimensions: (B, C, T, H, W)
+        frames = torch.randn(1, 3, 16, 512, 512)  # No more list!
+        return type('obj', (object,), {'frames' : [frames]})() # Now return as a list.
     class vae:
         @staticmethod
         def enable_tiling():
           return
-def quantize_(*args, **kwargs):#Dummy
-    return
 
 def float8_weight_only():#Dummy
     return
@@ -147,12 +147,12 @@ class SkyReelsVideoSingleGpuInfer:
       logger.info("Warm-up complete.")
 
     def infer(self, **kwargs):
-        """Handles inference requests."""
-        if not self.is_initialized:
-          self.initialize()
-        if "seed" in kwargs:
-            kwargs["generator"] = torch.Generator(self.gpu_device).manual_seed(kwargs["seed"])
-            del kwargs["seed"]
-        assert (self.task_type == TaskType.I2V and "image" in kwargs) or self.task_type == TaskType.T2V
-        result = self.pipe(**kwargs).frames[0]
-        return result
+      """Handles inference requests."""
+      if not self.is_initialized:
+        self.initialize()
+      if "seed" in kwargs:
+          kwargs["generator"] = torch.Generator(self.gpu_device).manual_seed(kwargs["seed"])
+          del kwargs["seed"]
+      assert (self.task_type == TaskType.I2V and "image" in kwargs) or self.task_type == TaskType.T2V
+      result = self.pipe(**kwargs).frames[0] #Get first element of list
+      return result
