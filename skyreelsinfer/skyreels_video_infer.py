@@ -129,7 +129,7 @@ class SkyReelsVideoSingleGpuInfer:
         max_batch_dim_size = 2 if self.enable_cfg_parallel and self.world_size > 1 else 1
         logger.info(f"max_batch_dim_size: {max_batch_dim_size}")
         if self.is_offload:
-            pass #Offload
+            pass # Offload call
         else:
             self.pipe.to(self.gpu_device)
 
@@ -161,7 +161,7 @@ class SkyReelsVideoSingleGpuInfer:
             "embedded_guidance_scale": 1.0,
         }
         if self.task_type == TaskType.I2V:
-          init_kwargs["image"] = Image.new("RGB", (544,960), color="black") #Dummy
+          init_kwargs["image"] = Image.new("RGB",(544,960), color = "black") #Dummy black image for init
         self.pipe(**init_kwargs)
         logger.info("Warm-up complete.")
 
@@ -240,13 +240,12 @@ def single_gpu_run(
         enable_cfg_parallel=enable_cfg_parallel,
     )
     pipe.inference(request_queue, response_queue)
-
-class Predictor:  # Renamed class for clarity
+class Predictor:  # Manages the child process
     def __init__(self):
         self.process = None
         self.request_queue = None
         self.response_queue = None
-        self.offload_config = None #Initialize
+        self.config = None  # Store config here
 
     def initialize(self,
         task_type: TaskType,
@@ -257,57 +256,61 @@ class Predictor:  # Renamed class for clarity
         offload_config: OffloadConfig = OffloadConfig(),
         enable_cfg_parallel: bool = True,):
 
-        self.offload_config = offload_config
+        self.config = {  # Store ALL config in a dict
+            "task_type": task_type,
+            "model_id": model_id,
+            "quant_model": quant_model,
+            "world_size": world_size,
+            "is_offload": is_offload,
+            "offload_config": offload_config,
+            "enable_cfg_parallel": enable_cfg_parallel,
+        }
 
-        with spawn_context() as ctx:
-          self.request_queue = ctx.Queue()
-          self.response_queue = ctx.Queue()
-          self.process = ctx.Process(
-              target=single_gpu_run,
-              args=(
-                  0,  # rank (assuming single GPU)
-                  task_type,
-                  model_id,
-                  self.request_queue,
-                  self.response_queue,
-                  quant_model,
-                  world_size,
-                  is_offload,
-                  offload_config,
-                  enable_cfg_parallel,
-              ),
-              daemon=False,  # MUST be False
-          )
-          self.process.start()
-          logger.info(f"Started single-GPU process with pid: {self.process.pid}")
+        # DO NOT create process or queues here!
 
-          # Get ready signal from worker
-          ready_msg = self.response_queue.get()
-          logger.info(f"Worker process ready: {ready_msg}")
-          self.request_queue.put("INIT") # Send initialization
-          init_response = self.response_queue.get()
-          if isinstance(init_response, Exception):
-            raise init_response
+    def _ensure_initialized(self):
+        """Creates and starts the process (if it doesn't exist)."""
+        if self.process is None:
+            if self.config is None:
+                raise RuntimeError("Predictor not initialized. Call initialize() first.")
 
-          if self.offload_config.compiler_transformer:
-            self.request_queue.put("WARMUP")
-            warmup_response = self.response_queue.get()
-            if isinstance(warmup_response,Exception):
-              raise warmup_response
+            with spawn_context() as ctx:
+                self.request_queue = ctx.Queue()
+                self.response_queue = ctx.Queue()
+                self.process = ctx.Process(
+                    target=single_gpu_run,
+                    kwargs=self.config,  # Pass config as keyword arguments
+                )
+                self.process.start()
+                logger.info(f"Started inference process with PID: {self.process.pid}")
+
+                # Get ready signal, send init and warm up if needed.
+                ready_msg = self.response_queue.get()
+                logger.info(f"Process Ready msg: {ready_msg}")
+                self.request_queue.put("INIT")
+                init_response = self.response_queue.get()
+                if isinstance(init_response,Exception):
+                  raise init_response
+
+                if self.config["offload_config"].compiler_transformer: #Warm up call
+                  self.request_queue.put("WARMUP")
+                  warmup_response = self.response_queue.get()
+                  if isinstance(warmup_response, Exception):
+                    raise warmup_response
 
     def infer(self, **kwargs):
         """Sends an inference request and returns the result."""
-        if self.process is None or not self.process.is_alive():
-            raise RuntimeError("Inference process is not running. Call initialize() first.")
+        self._ensure_initialized()  # Create process if needed
 
-        self.request_queue.put(kwargs)  # Put the request (dictionary) into the queue
-        result = self.response_queue.get()  # Get the result
+        self.request_queue.put(kwargs)
+        result = self.response_queue.get()
 
         if isinstance(result, Exception):
-            raise result  # Re-raise exceptions from the child process
+            raise result
         return result
+
     def __del__(self):
-      if self.process is not None and self.process.is_alive():
-        self.process.terminate()
-        self.process.join()
-        logger.info("Inference process terminated")
+        if self.process is not None and self.process.is_alive():
+            self.process.terminate()
+            self.process.join()
+            logger.info("Inference process terminated")
