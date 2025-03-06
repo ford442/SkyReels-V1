@@ -1,6 +1,7 @@
+# skyreelsinfer/skyreels_video_infer.py
 import logging
 import os
-from collections import OrderedDict  # Import OrderedDict
+from collections import OrderedDict
 
 import torch
 from diffusers import HunyuanVideoTransformer3DModel
@@ -13,6 +14,7 @@ from . import TaskType
 from .offload import OffloadConfig
 from .pipelines import SkyreelsVideoPipeline
 
+
 # --- Dummy Classes (with named_children) ---
 class LlamaModel:
     @staticmethod
@@ -24,11 +26,11 @@ class LlamaModel:
 
     def __init__(self):
         super().__init__()
-        self._modules = OrderedDict()  # Add _modules
-        self.linear = torch.nn.Linear(10,10) # Add dummy submodule
+        self._modules = OrderedDict()
+        self.linear = torch.nn.Linear(10,10)
         self._modules["linear"] = self.linear
 
-    def named_children(self):  # Implement named_children
+    def named_children(self):
         return self._modules.items()
 
 class HunyuanVideoTransformer3DModel:
@@ -39,11 +41,11 @@ class HunyuanVideoTransformer3DModel:
         return self
     def __init__(self):
         super().__init__()
-        self._modules = OrderedDict()  # Add _modules
+        self._modules = OrderedDict()
         self.linear = torch.nn.Linear(10,10)
         self._modules["linear"] = self.linear
 
-    def named_children(self):  # Implement named_children
+    def named_children(self):
         return self._modules.items()
 
 class SkyreelsVideoPipeline:
@@ -60,22 +62,22 @@ class SkyreelsVideoPipeline:
     def __init__(self):
       super().__init__()
       self._modules = OrderedDict()
-      self.vae = self.VAE() # Instantiate the VAE
+      self.vae = self.VAE()
       self._modules["vae"] = self.vae
 
     def named_children(self):
       return self._modules.items()
 
-    class VAE:  # Corrected inner class name
+    class VAE:
         def enable_tiling(self):
             pass  # Dummy implementation
-
 
 def quantize_(*args, **kwargs):
     return
 
 def float8_weight_only():
     return
+# --- End Dummy Classes
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +104,7 @@ class SkyReelsVideoSingleGpuInfer:
             base_model_id, transformer=transformer, text_encoder=text_encoder, torch_dtype=torch.bfloat16
         ).to("cpu")
 
-        pipe.vae.enable_tiling()  # Now this will work
+        pipe.vae.enable_tiling()
         torch.cuda.empty_cache()
         return pipe
 
@@ -126,7 +128,6 @@ class SkyReelsVideoSingleGpuInfer:
         self.gpu_device = None
 
     def initialize(self):
-        """Initializes the model and moves it to the GPU."""
         if self.is_initialized:
             return
 
@@ -168,12 +169,11 @@ class SkyReelsVideoSingleGpuInfer:
             "embedded_guidance_scale": 1.0,
         }
       if self.task_type == TaskType.I2V:
-        init_kwargs["image"] = Image.new("RGB",(544,960), color = "black")
+        init_kwargs["image"] = Image.new("RGB",(544,960), color="black")
       self.pipe(**init_kwargs)
       logger.info("Warm-up complete.")
 
     def infer(self, **kwargs):
-        """Handles inference requests."""
         if not self.is_initialized:
           self.initialize()
         if "seed" in kwargs:
