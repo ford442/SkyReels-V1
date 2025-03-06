@@ -1,6 +1,11 @@
-from enum import Enum
+#skyreelsinfer/__init__.py
+class TaskType:
+    T2V = 0
+    I2V = 1
 
-
-class TaskType(str, Enum):
-    T2V = "text2video"
-    I2V = "image2video"
+class OffloadConfig: #Moved to init
+    def __init__(self, high_cpu_memory=False, parameters_level=False, compiler_transformer=False, compiler_cache=""):
+        self.high_cpu_memory = high_cpu_memory
+        self.parameters_level = parameters_level
+        self.compiler_transformer = compiler_transformer
+        self.compiler_cache = compiler_cache
