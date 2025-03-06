@@ -1,4 +1,3 @@
-# skyreelsinfer/skyreels_video_infer.py
 import logging
 import os
 from collections import OrderedDict  # Import OrderedDict
@@ -61,16 +60,16 @@ class SkyreelsVideoPipeline:
     def __init__(self):
       super().__init__()
       self._modules = OrderedDict()
-      self.vae = self #Dummy vae
+      self.vae = self.VAE() # Instantiate the VAE
       self._modules["vae"] = self.vae
 
     def named_children(self):
       return self._modules.items()
 
-    class vae:
-        @staticmethod
-        def enable_tiling():
-          return
+    class VAE:  # Corrected inner class name
+        def enable_tiling(self):
+            pass  # Dummy implementation
+
 
 def quantize_(*args, **kwargs):
     return
@@ -92,10 +91,10 @@ class SkyReelsVideoSingleGpuInfer:
         ).to("cpu")
 
         if quant_model:
-            quantize_(text_encoder, float8_weight_only()) # Use the dummy
+            quantize_(text_encoder, float8_weight_only())
             text_encoder.to("cpu")
             torch.cuda.empty_cache()
-            quantize_(transformer, float8_weight_only()) # Use the dummy
+            quantize_(transformer, float8_weight_only())
             transformer.to("cpu")
             torch.cuda.empty_cache()
 
@@ -103,7 +102,7 @@ class SkyReelsVideoSingleGpuInfer:
             base_model_id, transformer=transformer, text_encoder=text_encoder, torch_dtype=torch.bfloat16
         ).to("cpu")
 
-        pipe.vae.enable_tiling()
+        pipe.vae.enable_tiling()  # Now this will work
         torch.cuda.empty_cache()
         return pipe
 
@@ -127,6 +126,7 @@ class SkyReelsVideoSingleGpuInfer:
         self.gpu_device = None
 
     def initialize(self):
+        """Initializes the model and moves it to the GPU."""
         if self.is_initialized:
             return
 
@@ -168,11 +168,12 @@ class SkyReelsVideoSingleGpuInfer:
             "embedded_guidance_scale": 1.0,
         }
       if self.task_type == TaskType.I2V:
-        init_kwargs["image"] = Image.new("RGB",(544,960), color="black")
+        init_kwargs["image"] = Image.new("RGB",(544,960), color = "black")
       self.pipe(**init_kwargs)
       logger.info("Warm-up complete.")
 
     def infer(self, **kwargs):
+        """Handles inference requests."""
         if not self.is_initialized:
           self.initialize()
         if "seed" in kwargs:
