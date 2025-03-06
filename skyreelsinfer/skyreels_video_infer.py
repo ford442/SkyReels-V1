@@ -211,7 +211,7 @@ class SkyReelsVideoInfer:
         spawn_thread = threading.Thread(
             target=self.lauch_single_gpu_infer,
             args=(task_type, model_id, quant_model, world_size, is_offload, offload_config, enable_cfg_parallel),
-            daemon=True,
+            daemon=False,
         )
         spawn_thread.start()
         logger.info(f"Started multi-GPU thread with GPU_NUM: {world_size}")
@@ -236,7 +236,7 @@ class SkyReelsVideoInfer:
             single_gpu_run,
             nprocs=world_size,
             join=True,
-            daemon=True,
+            daemon=False,
             args=(
                 task_type,
                 model_id,
