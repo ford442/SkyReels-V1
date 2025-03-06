@@ -65,141 +65,157 @@ def quantize_(*args, **kwargs): #Dummy Function
 def float8_weight_only(): #Dummy function
     return
 logger = logging.getLogger(__name__)
+
 class SkyReelsVideoSingleGpuInfer:
-    def _load_model(
-        self,
-        model_id: str,
-        base_model_id: str = "hunyuanvideo-community/HunyuanVideo",
-        quant_model: bool = True,
-    ):
-        # No gpu_device parameter here
+    def _load_model(self, model_id: str, base_model_id: str = "hunyuanvideo-community/HunyuanVideo", quant_model: bool = True):
         logger.info(f"load model model_id:{model_id} quan_model:{quant_model}")
         text_encoder = LlamaModel.from_pretrained(
-            base_model_id,
-            subfolder="text_encoder",
-            torch_dtype=torch.bfloat16,
+            base_model_id, subfolder="text_encoder", torch_dtype=torch.bfloat16
         ).to("cpu")
         transformer = HunyuanVideoTransformer3DModel.from_pretrained(
-            model_id,
-            torch_dtype=torch.bfloat16,
-            device="cpu",
+            model_id, torch_dtype=torch.bfloat16, device="cpu"
         ).to("cpu")
 
         if quant_model:
-            quantize_(text_encoder, float8_weight_only())  # No device here
+            quantize_(text_encoder, float8_weight_only())
             text_encoder.to("cpu")
-            torch.cuda.empty_cache()  # Clear cache *after* moving to CPU
-            quantize_(transformer, float8_weight_only())  # No device here
+            torch.cuda.empty_cache()
+            quantize_(transformer, float8_weight_only())
             transformer.to("cpu")
             torch.cuda.empty_cache()
 
         pipe = SkyreelsVideoPipeline.from_pretrained(
-            base_model_id,
-            transformer=transformer,
-            text_encoder=text_encoder,
-            torch_dtype=torch.bfloat16,
+            base_model_id, transformer=transformer, text_encoder=text_encoder, torch_dtype=torch.bfloat16
         ).to("cpu")
         pipe.vae.enable_tiling()
         torch.cuda.empty_cache()
         return pipe
-
 
     def __init__(
         self,
         task_type: TaskType,
         model_id: str,
         quant_model: bool = True,
-        local_rank: int = 0,
+        local_rank: int = 0,  # Default value, adjust if needed
         world_size: int = 1,
         is_offload: bool = True,
         offload_config: OffloadConfig = OffloadConfig(),
         enable_cfg_parallel: bool = True,
     ):
+        # Store all the configuration parameters, but don't load the model yet.
         self.task_type = task_type
         self.gpu_rank = local_rank
-        self.model_id = model_id  # Store model_id for later
+        self.model_id = model_id
         self.quant_model = quant_model
         self.world_size = world_size
         self.is_offload = is_offload
         self.offload_config = offload_config
         self.enable_cfg_parallel = enable_cfg_parallel
-
-        # Don't load the model here!
         self.pipe = None  # Initialize to None
         self.is_initialized = False
+        self.gpu_device = None
+
 
     def initialize(self):
-        """Initializes the model and moves it to the GPU (if available)."""
+        """Initializes the model and moves it to the GPU."""
         if self.is_initialized:
             return  # Already initialized
 
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available. Cannot initialize model.")
 
-        gpu_device = "cuda:0"  # Now we can safely assume CUDA is available
-        self.pipe = self._load_model(
-            model_id=self.model_id, quant_model=self.quant_model
-        )
+        self.gpu_device = f"cuda:{self.gpu_rank}" #f"cuda:0"  # Now safe to use
+        self.pipe = self._load_model(model_id=self.model_id, quant_model=self.quant_model)
 
         max_batch_dim_size = 2 if self.enable_cfg_parallel and self.world_size > 1 else 1
-        # Removed: max_ulysses_dim_size as it's not used
         logger.info(f"max_batch_dim_size: {max_batch_dim_size}")
 
         if self.is_offload:
-          pass #Skip for now
-            # Offload.offload(
-            #     pipeline=self.pipe,
-            #     config=self.offload_config,
-            # )
+            pass  # Offload call (optional)
         else:
-            self.pipe.to(gpu_device)
+            self.pipe.to(self.gpu_device)
 
         if self.offload_config.compiler_transformer:
             torch._dynamo.config.suppress_errors = True
             os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
             os.environ["TORCHINDUCTOR_CACHE_DIR"] = f"{self.offload_config.compiler_cache}_{self.world_size}"
             self.pipe.transformer = torch.compile(
-                self.pipe.transformer,
-                mode="max-autotune-no-cudagraphs",
-                dynamic=True,
+                self.pipe.transformer, mode="max-autotune-no-cudagraphs", dynamic=True
             )
-            self.warm_up()
+            # Removed warm_up call from here
+
         self.is_initialized = True
 
+    def warm_up(self): #Separate warmup
+        """Performs a warm-up inference (optional)."""
+        if not self.is_initialized:
+            raise RuntimeError("Model must be initialized before warm-up.")
 
-    def warm_up(self):
         init_kwargs = {
             "prompt": "A woman is dancing in a room",
             "height": 544,
             "width": 960,
             "guidance_scale": 6,
             "num_inference_steps": 1,
-            "negative_prompt": "Aerial view, aerial view, overexposed, low quality, deformation, a poor composition, bad hands, bad teeth, bad eyes, bad limbs, distortion",
-            "num_frames": 97,
-            "generator": torch.Generator("cuda").manual_seed(42),
+            "negative_prompt": "bad quality",
+            "num_frames": 16,  # Use a small number of frames for warm-up
+            "generator": torch.Generator(self.gpu_device).manual_seed(42), #use gpu device
             "embedded_guidance_scale": 1.0,
         }
-        if self.task_type == TaskType.I2V:
-            init_kwargs["image"] = Image.new("RGB", (544, 960), color="black")
-        self.pipe(**init_kwargs)
+        if self.task_type == TaskType.I2V:  # Example condition
+          init_kwargs["image"] = Image.new("RGB",(544,960),color="black")
+        self.pipe(**init_kwargs) #Dummy call
+        logger.info("Warm-up complete.")
 
-    def damon_inference(self, request_queue: mp.Queue, response_queue: mp.Queue):
-        # Initialize here, *after* we know the GPU is available
-        self.initialize()
-        response_queue.put(f"rank:{self.gpu_rank} ready")
-        logger.info(f"rank:{self.gpu_rank} finish init pipe")
+    def inference(self, request_queue: mp.Queue, response_queue: mp.Queue):
+        """Handles inference requests."""
+        response_queue.put(f"rank:{self.gpu_rank} ready")  # Signal ready *before* initialization
+        logger.info(f"rank:{self.gpu_rank} waiting for initialization request")
+
+        # Wait for an initialization signal
+        init_signal = request_queue.get()  # Expects the string "INIT"
+        if init_signal == "INIT":
+            self.initialize()  # Initialize *after* the signal
+            logger.info(f"rank:{self.gpu_rank} finish init pipe")
+            response_queue.put("INITIALIZED") # Send initialization complete
+        else:
+            error_msg = f"rank:{self.gpu_rank} received unexpected initial message: {init_signal}"
+            logger.error(error_msg)
+            response_queue.put(RuntimeError(error_msg)) #Send error.
+            return #Exit on bad signal.
+
+        #Now wait for warm up
+        warmup_signal = request_queue.get()
+        if warmup_signal == "WARMUP":
+          if self.offload_config.compiler_transformer: #Only do warmup if compiling
+            self.warm_up()
+          response_queue.put("WARMUP_COMPLETE")
+        else:
+          error_msg = f"rank:{self.gpu_rank} received unexpected warm-up message: {warmup_signal}"
+          logger.error(error_msg)
+          response_queue.put(RuntimeError(error_msg))
+          return
+
         while True:
             logger.info(f"rank:{self.gpu_rank} waiting for request")
-            kwargs = request_queue.get()
+            kwargs = request_queue.get()  # Wait for a request
             logger.info(f"rank:{self.gpu_rank} kwargs: {kwargs}")
+
             if "seed" in kwargs:
-                kwargs["generator"] = torch.Generator("cuda").manual_seed(kwargs["seed"])
+                kwargs["generator"] = torch.Generator(self.gpu_device).manual_seed(kwargs["seed"])
                 del kwargs["seed"]
+
             start_time = time.time()
-            assert (self.task_type == TaskType.I2V and "image" in kwargs) or self.task_type == TaskType.T2V
-            out = self.pipe(**kwargs).frames[0]
-            logger.info(f"rank:{self.gpu_rank} inference time: {time.time() - start_time}")
-            response_queue.put(out) #Removed rank checking
+            try:
+                assert (self.task_type == TaskType.I2V and "image" in kwargs) or self.task_type == TaskType.T2V
+                out = self.pipe(**kwargs).frames[0]
+                logger.info(f"rank:{self.gpu_rank} inference time: {time.time() - start_time}")
+                response_queue.put(out)
+
+            except Exception as e:
+                logger.error(f"Inference error: {e}")
+                response_queue.put(e)  # Put the exception in the queue
+
 
 def single_gpu_run(
     rank,
@@ -223,7 +239,8 @@ def single_gpu_run(
         offload_config=offload_config,
         enable_cfg_parallel=enable_cfg_parallel,
     )
-    pipe.damon_inference(request_queue, response_queue)
+    pipe.inference(request_queue, response_queue)
+
 
 class SkyReelsVideoInfer:
     def __init__(
@@ -237,73 +254,79 @@ class SkyReelsVideoInfer:
         enable_cfg_parallel: bool = True,
     ):
         self.world_size = world_size
-        self.REQ_QUEUES = mp.Queue()  # Use normal queue.
-        self.RESP_QUEUE = mp.Queue()
+        self.task_type = task_type
+        self.model_id = model_id
+        self.quant_model = quant_model
+        self.is_offload = is_offload
+        self.offload_config = offload_config
+        self.enable_cfg_parallel = enable_cfg_parallel
+
+        # Use the spawn context *here* to create the queues.
+        with spawn_context() as ctx:
+            self.REQ_QUEUES = ctx.Queue()
+            self.RESP_QUEUE = ctx.Queue()
+
         assert self.world_size > 0, "gpu_num must be greater than 0"
 
-        # Use a regular thread, but the key is the context manager in lauch_single_gpu_infer
-        spawn_thread = threading.Thread(
-            target=self.lauch_single_gpu_infer,
-            args=(task_type, model_id, quant_model, world_size, is_offload, offload_config, enable_cfg_parallel),
-            daemon=False,  # Still good practice to set this to False
-        )
-        spawn_thread.start()
-        logger.info(f"Started multi-GPU thread with GPU_NUM: {world_size}")
-        # Block and wait for the prediction process to start
-        for _ in range(world_size):
-            msg = self.RESP_QUEUE.get()
-            logger.info(f"launch_multi_gpu get init msg: {msg}")
+        self.process = None  # Initialize the process attribute
+        self._start_process() #Start on initialization
 
-    def lauch_single_gpu_infer(
-        self,
-        task_type: TaskType,
-        model_id: str,
-        quant_model: bool = True,
-        world_size: int = 1,
-        is_offload: bool = True,
-        offload_config: OffloadConfig = OffloadConfig(),
-        enable_cfg_parallel: bool = True,
-    ):
-        # Use the context manager here!
+    def _start_process(self):
+        """Starts the single GPU inference process."""
         with spawn_context() as ctx:
-            print(f"Daemon status before spawn: {mp.current_process().daemon}")  # Debug print
-            ctx.spawn(  # Use ctx.spawn, *not* mp.spawn
-                single_gpu_run,
-                nprocs=world_size,
-                join=True,
-                daemon=False,  # Controls child processes
+            print(f"Daemon status before Process: {mp.current_process().daemon}")
+            self.process = ctx.Process(  # Use ctx.Process
+                target=single_gpu_run,
                 args=(
-                    task_type,
-                    model_id,
+                    0,  # Assuming single GPU, rank is 0
+                    self.task_type,
+                    self.model_id,
                     self.REQ_QUEUES,
                     self.RESP_QUEUE,
-                    quant_model,
-                    world_size,
-                    is_offload,
-                    offload_config,
-                    enable_cfg_parallel,
+                    self.quant_model,
+                    self.world_size,
+                    self.is_offload,
+                    self.offload_config,
+                    self.enable_cfg_parallel
                 ),
+                daemon=False,
             )
-        logger.info(f"finish lanch multi gpu infer, world_size:{world_size}")
+            self.process.start()
+            logger.info(f"Started single-GPU process with pid: {self.process.pid}")
+            # Wait for the ready signal *before* sending the INIT signal
+            ready_msg = self.RESP_QUEUE.get()
+            logger.info(f"Process Ready, msg: {ready_msg}")
 
-predictor = None
+            # Send the initialization signal
+            self.REQ_QUEUES.put("INIT")
+            init_response = self.RESP_QUEUE.get() # Get initialization response
+            if isinstance(init_response,Exception): #Check for errors
+              raise init_response
+            logger.info(f"Initialization complete, response: {init_response}")
 
-import spaces
-@spaces.GPU(duration=90)
-def init_predictor():
-    global predictor
-    if predictor is None: # Prevent multiple initializations.
-      predictor = SkyReelsVideoInfer(
-          task_type=TaskType.I2V,
-          model_id="Skywork/SkyReels-V1-Hunyuan-I2V",
-          quant_model=True,
-          world_size=1,
-          is_offload=True,
-          offload_config=OffloadConfig(
-              high_cpu_memory=True,
-              parameters_level=True,
-              compiler_transformer=False,
-          ),
-      )
-    else:
-      print("Predictor already initialized")
+            #Send warm up signal if compiler is enabled
+            if self.offload_config.compiler_transformer:
+              self.REQ_QUEUES.put("WARMUP")
+              warmup_response = self.RESP_QUEUE.get()
+              if isinstance(warmup_response, Exception):
+                raise warmup_response
+              logger.info(f"Warm-up complete, response: {warmup_response}")
+            else:
+              logger.info("Skipping warm-up as compiler is not enabled")
+
+    def infer(self, **kwargs):
+        """Sends an inference request and returns the result."""
+        self.REQ_QUEUES.put(kwargs)
+        result = self.RESP_QUEUE.get()
+
+        if isinstance(result, Exception):
+            raise result  # Re-raise the exception
+        return result
+
+    def __del__(self):
+        """Ensures the process is terminated."""
+        if self.process is not None and self.process.is_alive():
+            self.process.terminate()
+            self.process.join()
+            logger.info("Inference process terminated.")
+
