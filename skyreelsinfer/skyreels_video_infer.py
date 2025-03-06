@@ -102,7 +102,7 @@ class SkyReelsVideoSingleGpuInfer:
         offload_config: OffloadConfig = OffloadConfig(),
         enable_cfg_parallel: bool = True,
     ):
-        # Store configuration only.  NO GPU or process setup here.
+        # Store configuration only.
         self.task_type = task_type
         self.gpu_rank = local_rank
         self.model_id = model_id
@@ -129,7 +129,7 @@ class SkyReelsVideoSingleGpuInfer:
         max_batch_dim_size = 2 if self.enable_cfg_parallel and self.world_size > 1 else 1
         logger.info(f"max_batch_dim_size: {max_batch_dim_size}")
         if self.is_offload:
-          pass #offload
+          pass
         else:
             self.pipe.to(self.gpu_device)
 
@@ -161,7 +161,7 @@ class SkyReelsVideoSingleGpuInfer:
             "embedded_guidance_scale": 1.0,
         }
         if self.task_type == TaskType.I2V: #image to video
-          init_kwargs["image"] = Image.new("RGB",(544,960),color="black") #Dummy
+          init_kwargs["image"] = Image.new("RGB",(544,960), color = "black")
         self.pipe(**init_kwargs)
         logger.info("Warm-up complete.")
 
