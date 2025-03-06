@@ -7,8 +7,8 @@ transformers #==4.46.3
 accelerate #==1.1.1
 #bitsandbytes==0.45.0
 sageattention #==1.0.6
-#git+https://github.com/huggingface/diffusers.git@464374fb87610c53b2cf81e08d3df628fada3ce4
-git+https://github.com/huggingface/diffusers.git
+git+https://github.com/huggingface/diffusers.git@464374fb87610c53b2cf81e08d3df628fada3ce4
+#git+https://github.com/huggingface/diffusers.git
 git+https://github.com/Howe2018/ParaAttention.git
 torchao #==0.7.0
 imageio-ffmpeg #==0.5.1
