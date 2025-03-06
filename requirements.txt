@@ -1,4 +1,4 @@
-torch #==2.5.1
+torch==2.5.1
 torchvision #==0.20.1 
 torchaudio #==2.5.1
 #xformers #==0.0.29.post1
