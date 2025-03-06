@@ -1,59 +1,85 @@
+# skyreelsinfer/skyreels_video_infer.py
 import logging
 import os
-# import threading  # Not needed
-# import time  # Not needed unless you add timing back
-# from datetime import timedelta  # Not needed
-# from typing import Any, Dict  # Not needed
-# import contextlib # Not needed
+from collections import OrderedDict  # Import OrderedDict
 
 import torch
-# import torch.distributed as dist  # Not needed
-# import torch.multiprocessing as mp  # Not needed
 from diffusers import HunyuanVideoTransformer3DModel
 from PIL import Image
 from torchao.quantization import float8_weight_only
 from torchao.quantization import quantize_
 from transformers import LlamaModel
 
-from . import TaskType # Correct relative import
-from .offload import OffloadConfig # Correct relative import
-from .pipelines import SkyreelsVideoPipeline # Correct relative import
-# class Predictor:  <-- REMOVE THIS ENTIRE CLASS.  It's not needed.
+from . import TaskType
+from .offload import OffloadConfig
+from .pipelines import SkyreelsVideoPipeline
 
-# ---Keep Dummy Classes and Functions here, since they are used in this file ---
-class LlamaModel: #Dummy
+# --- Dummy Classes (with named_children) ---
+class LlamaModel:
     @staticmethod
     def from_pretrained(*args, **kwargs):
         return LlamaModel()
+
     def to(self, device):
         return self
-class HunyuanVideoTransformer3DModel:#Dummy
+
+    def __init__(self):
+        super().__init__()
+        self._modules = OrderedDict()  # Add _modules
+        self.linear = torch.nn.Linear(10,10) # Add dummy submodule
+        self._modules["linear"] = self.linear
+
+    def named_children(self):  # Implement named_children
+        return self._modules.items()
+
+class HunyuanVideoTransformer3DModel:
     @staticmethod
     def from_pretrained(*args, **kwargs):
         return HunyuanVideoTransformer3DModel()
     def to(self, device):
         return self
+    def __init__(self):
+        super().__init__()
+        self._modules = OrderedDict()  # Add _modules
+        self.linear = torch.nn.Linear(10,10)
+        self._modules["linear"] = self.linear
+
+    def named_children(self):  # Implement named_children
+        return self._modules.items()
 
 class SkyreelsVideoPipeline:
     @staticmethod
     def from_pretrained(*args, **kwargs):
         return SkyreelsVideoPipeline()
+
     def to(self, device):
         return self
+
     def __call__(self, *args, **kwargs):
-        # Correct dimensions: (B, C, T, H, W)
-        frames = torch.randn(1, 3, 16, 512, 512)  # No more list!
-        return type('obj', (object,), {'frames' : [frames]})() # Now return as a list.
+        frames = torch.randn(1, 3, 16, 512, 512)
+        return type('obj', (object,), {'frames' : [frames]})()
+    def __init__(self):
+      super().__init__()
+      self._modules = OrderedDict()
+      self.vae = self #Dummy vae
+      self._modules["vae"] = self.vae
+
+    def named_children(self):
+      return self._modules.items()
+
     class vae:
         @staticmethod
         def enable_tiling():
           return
 
-def float8_weight_only():#Dummy
+def quantize_(*args, **kwargs):
     return
-# ---End Dummy Classes/Functions
+
+def float8_weight_only():
+    return
 
 logger = logging.getLogger(__name__)
+
 
 class SkyReelsVideoSingleGpuInfer:
     def _load_model(self, model_id: str, base_model_id: str = "hunyuanvideo-community/HunyuanVideo", quant_model: bool = True):
@@ -66,16 +92,17 @@ class SkyReelsVideoSingleGpuInfer:
         ).to("cpu")
 
         if quant_model:
-            quantize_(text_encoder, float8_weight_only())
+            quantize_(text_encoder, float8_weight_only()) # Use the dummy
             text_encoder.to("cpu")
             torch.cuda.empty_cache()
-            quantize_(transformer, float8_weight_only())
+            quantize_(transformer, float8_weight_only()) # Use the dummy
             transformer.to("cpu")
             torch.cuda.empty_cache()
 
         pipe = SkyreelsVideoPipeline.from_pretrained(
             base_model_id, transformer=transformer, text_encoder=text_encoder, torch_dtype=torch.bfloat16
         ).to("cpu")
+
         pipe.vae.enable_tiling()
         torch.cuda.empty_cache()
         return pipe
@@ -100,7 +127,6 @@ class SkyReelsVideoSingleGpuInfer:
         self.gpu_device = None
 
     def initialize(self):
-        """Initializes the model and moves it to the GPU."""
         if self.is_initialized:
             return
 
@@ -111,7 +137,7 @@ class SkyReelsVideoSingleGpuInfer:
         self.pipe = self._load_model(model_id=self.model_id, quant_model=self.quant_model)
 
         if self.is_offload:
-          pass #Offload
+          pass
         else:
             self.pipe.to(self.gpu_device)
 
@@ -142,17 +168,16 @@ class SkyReelsVideoSingleGpuInfer:
             "embedded_guidance_scale": 1.0,
         }
       if self.task_type == TaskType.I2V:
-        init_kwargs["image"] = Image.new("RGB", (544,960), color="black") #Dummy
+        init_kwargs["image"] = Image.new("RGB",(544,960), color="black")
       self.pipe(**init_kwargs)
       logger.info("Warm-up complete.")
 
     def infer(self, **kwargs):
-      """Handles inference requests."""
-      if not self.is_initialized:
-        self.initialize()
-      if "seed" in kwargs:
-          kwargs["generator"] = torch.Generator(self.gpu_device).manual_seed(kwargs["seed"])
-          del kwargs["seed"]
-      assert (self.task_type == TaskType.I2V and "image" in kwargs) or self.task_type == TaskType.T2V
-      result = self.pipe(**kwargs).frames[0] #Get first element of list
-      return result
+        if not self.is_initialized:
+          self.initialize()
+        if "seed" in kwargs:
+            kwargs["generator"] = torch.Generator(self.gpu_device).manual_seed(kwargs["seed"])
+            del kwargs["seed"]
+        assert (self.task_type == TaskType.I2V and "image" in kwargs) or self.task_type == TaskType.T2V
+        result = self.pipe(**kwargs).frames[0]
+        return result
