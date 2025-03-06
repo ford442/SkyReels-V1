@@ -69,6 +69,7 @@ logger = logging.getLogger(__name__)
 class SkyReelsVideoSingleGpuInfer:
     def _load_model(self, model_id: str, base_model_id: str = "hunyuanvideo-community/HunyuanVideo", quant_model: bool = True):
         logger.info(f"load model model_id:{model_id} quan_model:{quant_model}")
+        # Load to CPU first
         text_encoder = LlamaModel.from_pretrained(
             base_model_id, subfolder="text_encoder", torch_dtype=torch.bfloat16
         ).to("cpu")
@@ -79,7 +80,7 @@ class SkyReelsVideoSingleGpuInfer:
         if quant_model:
             quantize_(text_encoder, float8_weight_only())
             text_encoder.to("cpu")
-            torch.cuda.empty_cache()
+            torch.cuda.empty_cache()  # Clear cache after moving to CPU
             quantize_(transformer, float8_weight_only())
             transformer.to("cpu")
             torch.cuda.empty_cache()
@@ -88,7 +89,7 @@ class SkyReelsVideoSingleGpuInfer:
             base_model_id, transformer=transformer, text_encoder=text_encoder, torch_dtype=torch.bfloat16
         ).to("cpu")
         pipe.vae.enable_tiling()
-        torch.cuda.empty_cache()
+        torch.cuda.empty_cache()  # Clear cache after loading
         return pipe
 
     def __init__(
@@ -96,13 +97,13 @@ class SkyReelsVideoSingleGpuInfer:
         task_type: TaskType,
         model_id: str,
         quant_model: bool = True,
-        local_rank: int = 0,  # Default value
+        local_rank: int = 0,
         world_size: int = 1,
         is_offload: bool = True,
         offload_config: OffloadConfig = OffloadConfig(),
         enable_cfg_parallel: bool = True,
     ):
-        # Store config, but DO NOT initialize anything GPU-related or process-related here.
+        # Store configuration, but don't initialize GPU or processes here.
         self.task_type = task_type
         self.gpu_rank = local_rank
         self.model_id = model_id
@@ -114,16 +115,15 @@ class SkyReelsVideoSingleGpuInfer:
 
         self.pipe = None
         self.is_initialized = False
-        self.gpu_device = None
-        self.process = None  # No process creation in __init__
-        self.REQ_QUEUES = None #Initialize to none
+        self.gpu_device = None  # Initialize to None
+        self.process = None
+        self.REQ_QUEUES = None
         self.RESP_QUEUE = None
-
 
     def initialize(self):
         """Initializes the model and moves it to the GPU."""
         if self.is_initialized:
-            return
+            return  # Already initialized
 
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available. Cannot initialize model.")
@@ -135,7 +135,7 @@ class SkyReelsVideoSingleGpuInfer:
         logger.info(f"max_batch_dim_size: {max_batch_dim_size}")
 
         if self.is_offload:
-          pass #Offload code
+          pass #Offload call
         else:
             self.pipe.to(self.gpu_device)
 
@@ -146,7 +146,7 @@ class SkyReelsVideoSingleGpuInfer:
             self.pipe.transformer = torch.compile(
                 self.pipe.transformer, mode="max-autotune-no-cudagraphs", dynamic=True
             )
-            # Removed warm_up from initialize
+            # Warm-up is now separate and conditional
 
         self.is_initialized = True
 
@@ -166,13 +166,13 @@ class SkyReelsVideoSingleGpuInfer:
             "generator": torch.Generator(self.gpu_device).manual_seed(42),
             "embedded_guidance_scale": 1.0,
         }
-        if self.task_type == TaskType.I2V:
-          init_kwargs["image"] = Image.new("RGB",(544,960),color="black") #Dummy image
-        self.pipe(**init_kwargs)
+        if self.task_type == TaskType.I2V: #image to video
+          init_kwargs["image"] = Image.new("RGB",(544, 960), color="black") #Dummy black image
+        self.pipe(**init_kwargs)  # Pass keyword arguments
         logger.info("Warm-up complete.")
 
     def inference(self, request_queue: mp.Queue, response_queue: mp.Queue):
-        """Handles inference requests."""
+        """Handles inference requests in the child process."""
         response_queue.put(f"rank:{self.gpu_rank} ready")
         logger.info(f"rank:{self.gpu_rank} waiting for initialization request")
 
@@ -198,6 +198,7 @@ class SkyReelsVideoSingleGpuInfer:
           logger.error(error_msg)
           response_queue.put(RuntimeError(error_msg))
           return
+
         while True:
             logger.info(f"rank:{self.gpu_rank} waiting for request")
             kwargs = request_queue.get()
@@ -210,10 +211,9 @@ class SkyReelsVideoSingleGpuInfer:
             start_time = time.time()
             try:
                 assert (self.task_type == TaskType.I2V and "image" in kwargs) or self.task_type == TaskType.T2V
-                out = self.pipe(**kwargs).frames[0]
+                out = self.pipe(**kwargs).frames[0]  # Unpack keyword arguments
                 logger.info(f"rank:{self.gpu_rank} inference time: {time.time() - start_time}")
                 response_queue.put(out)
-
             except Exception as e:
                 logger.error(f"Inference error: {e}")
                 response_queue.put(e)
@@ -263,16 +263,16 @@ class SkyReelsVideoInfer:
         self.offload_config = offload_config
         self.enable_cfg_parallel = enable_cfg_parallel
         self.process = None
-        self.REQ_QUEUES = None #Initialize to none
+        self.REQ_QUEUES = None
         self.RESP_QUEUE = None
 
-        # No process or queue creation in __init__!
+        # Queues and process are created lazily in _start_process
 
     def _start_process(self):
-        """Starts the single GPU inference process (NOW with context!)."""
+        """Starts the single GPU inference process."""
         with spawn_context() as ctx:
-            print(f"Daemon status before Process: {mp.current_process().daemon}")  # Debug print
-            self.REQ_QUEUES = ctx.Queue()  # Create queues *within* the context
+            print(f"Daemon status before Process: {mp.current_process().daemon}")
+            self.REQ_QUEUES = ctx.Queue()  # Create queues within the context
             self.RESP_QUEUE = ctx.Queue()
 
             self.process = ctx.Process(
@@ -289,30 +289,30 @@ class SkyReelsVideoInfer:
                     self.offload_config,
                     self.enable_cfg_parallel
                 ),
-                daemon=False,
+                daemon=False,  # MUST be False
             )
             self.process.start()
             logger.info(f"Started single-GPU process with pid: {self.process.pid}")
-             # Wait for the ready signal *before* sending the INIT signal
-            ready_msg = self.RESP_QUEUE.get()
+
+            # Wait for ready signal, then send INIT and WARMUP (if needed)
+            ready_msg = self.RESP_QUEUE.get()  # Wait for "ready"
             logger.info(f"Process Ready, msg: {ready_msg}")
 
-            # Send the initialization signal
-            self.REQ_QUEUES.put("INIT")
-            init_response = self.RESP_QUEUE.get() # Get initialization response
-            if isinstance(init_response,Exception): #Check for errors
-              raise init_response
+            self.REQ_QUEUES.put("INIT")  # Send initialization signal
+            init_response = self.RESP_QUEUE.get()
+            if isinstance(init_response, Exception):
+                raise init_response  # Re-raise if initialization failed
             logger.info(f"Initialization complete, response: {init_response}")
 
-            #Send warm up signal if compiler is enabled
             if self.offload_config.compiler_transformer:
-              self.REQ_QUEUES.put("WARMUP")
-              warmup_response = self.RESP_QUEUE.get()
-              if isinstance(warmup_response, Exception):
-                raise warmup_response
-              logger.info(f"Warm-up complete, response: {warmup_response}")
+                self.REQ_QUEUES.put("WARMUP") # Send warm up signal
+                warmup_response = self.RESP_QUEUE.get()
+                if isinstance(warmup_response, Exception):
+                    raise warmup_response
+                logger.info(f"Warm-up complete, response: {warmup_response}")
             else:
-              logger.info("Skipping warm-up as compiler is not enabled")
+              logger.info("Skipping warm-up as compiler is disabled.")
+
 
     def infer(self, **kwargs):
         """Sends an inference request and returns the result."""
@@ -320,16 +320,15 @@ class SkyReelsVideoInfer:
             # Lazily start the process on the first inference request
             self._start_process()
 
-        self.REQ_QUEUES.put(kwargs)
-        result = self.RESP_QUEUE.get()
+        self.REQ_QUEUES.put(kwargs)  # Put the request (dictionary) into the queue
+        result = self.RESP_QUEUE.get()  # Get the result
 
         if isinstance(result, Exception):
-            raise result
+            raise result  # Re-raise exceptions from the child process
         return result
 
-
     def __del__(self):
-        """Ensures the process is terminated."""
+        """Ensures the process is terminated when the object is deleted."""
         if self.process is not None and self.process.is_alive():
             self.process.terminate()
             self.process.join()
