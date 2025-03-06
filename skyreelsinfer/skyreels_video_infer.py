@@ -129,7 +129,7 @@ class SkyReelsVideoSingleGpuInfer:
         max_batch_dim_size = 2 if self.enable_cfg_parallel and self.world_size > 1 else 1
         logger.info(f"max_batch_dim_size: {max_batch_dim_size}")
         if self.is_offload:
-          pass
+            pass #Offload code here.
         else:
             self.pipe.to(self.gpu_device)
 
@@ -161,7 +161,7 @@ class SkyReelsVideoSingleGpuInfer:
             "embedded_guidance_scale": 1.0,
         }
         if self.task_type == TaskType.I2V: #image to video
-          init_kwargs["image"] = Image.new("RGB",(544,960), color = "black")
+          init_kwargs["image"] = Image.new("RGB",(544,960), color="black") #Dummy
         self.pipe(**init_kwargs)
         logger.info("Warm-up complete.")
 
@@ -316,4 +316,5 @@ class Predictor:  # Manages the child process
           self.process.terminate()
           self.process.join() #Wait for termination
           logger.info("Killed inference process")
+
 
