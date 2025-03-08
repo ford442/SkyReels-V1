@@ -113,4 +113,4 @@ if __name__ == "__main__":
     task_type = args.task_type
     init_predictor(task_type=task_type, gpu_num=args.gpu_num)
     demo = create_gradio_interface(args.task_type)
-    demo.launch()
+    demo.launch(share=True)
