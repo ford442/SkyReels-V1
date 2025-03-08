@@ -4,7 +4,7 @@ import sys
 import time
 import os
 import random
-sys.path.append(".")
+sys.path.append("/content/SkyReels-V1")
 from skyreelsinfer import TaskType
 from skyreelsinfer.offload import OffloadConfig
 from skyreelsinfer.skyreels_video_infer import SkyReelsVideoInfer
