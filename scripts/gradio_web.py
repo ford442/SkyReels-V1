@@ -32,18 +32,15 @@ def init_predictor(task_type:str, gpu_num:int=1):
         )
     )
 
-def generate_video(prompt, seed, image=None):
+def generate_video(prompt, image, size, steps, frames, guidance_scale, progress=gr.Progress(track_tqdm=True)):
     global task_type
     print(f"image:{type(image)}")
-
-    if seed == -1:
-        random.seed(time.time())
-        seed = int(random.randrange(4294967294))
-    
+    random.seed(time.time())
+    seed = int(random.randrange(4294967294))
     kwargs = {
         "prompt": prompt,
-        "height": 512,
-        "width": 512,
+        "height": size,
+        "width": size,
         "num_frames": 97,
         "num_inference_steps": 30,
         "seed": seed,
@@ -52,10 +49,11 @@ def generate_video(prompt, seed, image=None):
         "negative_prompt": "Aerial view, aerial view, overexposed, low quality, deformation, a poor composition, bad hands, bad teeth, bad eyes, bad limbs, distortion",
         "cfg_for": False,
     }
-
     if task_type == "i2v":
         assert image is not None, "please input image"
-        kwargs["image"] = load_image(image=image)
+        img = load_image(image=image)
+        img.resize((size,size), Image.LANCZOS)
+        kwargs["image"] = img
     global predictor
     output = predictor.inference(kwargs)
     save_dir = f"./result/{task_type}"
@@ -65,7 +63,6 @@ def generate_video(prompt, seed, image=None):
     export_to_video(output, video_out_file, fps=24)
     return video_out_file, kwargs
 
-
 def create_gradio_interface(task_type):
     """Create a Gradio interface based on the task type."""
     if task_type == "i2v":
@@ -73,15 +70,41 @@ def create_gradio_interface(task_type):
             with gr.Row():
                 image = gr.Image(label="Upload Image", type="filepath")
                 prompt = gr.Textbox(label="Input Prompt")
-                seed = gr.Number(label="Random Seed", value=-1)
             submit_button = gr.Button("Generate Video")
             output_video = gr.Video(label="Generated Video")
             output_params = gr.Textbox(label="Output Parameters")
-
+            size = gr.Slider(
+                    label="Size",
+                    minimum=256,
+                    maximum=1024,
+                    step=16,
+                    value=448,
+                )
+            frames = gr.Slider(
+                    label="Number of Frames",
+                    minimum=16,
+                    maximum=256,
+                    step=8,
+                    value=64,
+            )
+            steps = gr.Slider(
+                    label="Number of Steps",
+                    minimum=1,
+                    maximum=96,
+                    step=1,
+                    value=20,
+            )
+            guidance_scale = gr.Slider(
+                    label="Guidance Scale",
+                    minimum=1.0,
+                    maximum=16.0,
+                    step=.1,
+                    value=6.0,
+            )
             # Submit button logic
             submit_button.click(
                 fn=generate_video,
-                inputs=[prompt, seed, image],
+                inputs=[prompt, image, size, steps, frames, guidance_scale],
                 outputs=[output_video, output_params],
             )
 
