@@ -10,6 +10,7 @@ from skyreelsinfer.offload import OffloadConfig
 from skyreelsinfer.skyreels_video_infer import SkyReelsVideoInfer
 from diffusers.utils import export_to_video
 from diffusers.utils import load_image
+from PIL import Image
 
 predictor = None
 task_type = None
